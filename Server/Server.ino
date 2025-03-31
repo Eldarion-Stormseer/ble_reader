@@ -1,13 +1,25 @@
+#include <Arduino.h>
 #include <BLEDevice.h>
 #include <BLEUtils.h>
 #include <BLEServer.h>
+#include <Adafruit_MAX31865.h>
 
-// BLE Service & Characteristic UUIDs
-#define SERVICE_UUID        "12345678-1234-5678-1234-56789abcdef0"
-#define CHARACTERISTIC_UUID "abcdef01-1234-5678-1234-56789abcdef0"
-
-BLECharacteristic *pCharacteristic;
+// BLE UUIDs
+#define SERVICE_UUID            "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
+#define CHARACTERISTIC_UUID_ECG "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
+#define CHARACTERISTIC_UUID_TEMP "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
+BLECharacteristic *pEcgCharacteristic;
+BLECharacteristic *pTempCharacteristic;
 bool deviceConnected = false;
+
+// EKG
+const int ecgPin = 36;  // AD8232 output
+
+// MAX31865 setup
+#define MAX31865_CS 5
+#define RREF 4300.0
+#define RTD_NOMINAL 1000.0
+Adafruit_MAX31865 max31865 = Adafruit_MAX31865(MAX31865_CS);
 
 class MyServerCallbacks : public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) {
@@ -21,41 +33,59 @@ class MyServerCallbacks : public BLEServerCallbacks {
 
 void setup() {
     Serial.begin(115200);
+    pinMode(ecgPin, INPUT);
 
-    // Create the BLE Device
-    BLEDevice::init("ESP32_BLE");
+    // Start MAX31865 (3-wire eller 4-wire)
+    max31865.begin(MAX31865_3WIRE);
 
-    // Create the BLE Server
+    // Initialiser BLE
+    BLEDevice::init("LNO_ESP32_EKG");
     BLEServer *pServer = BLEDevice::createServer();
     pServer->setCallbacks(new MyServerCallbacks());
 
-    // Create the BLE Service
     BLEService *pService = pServer->createService(SERVICE_UUID);
 
-    // Create a BLE Characteristic
-    pCharacteristic = pService->createCharacteristic(
-                        CHARACTERISTIC_UUID,
-                        BLECharacteristic::PROPERTY_READ |
-                        BLECharacteristic::PROPERTY_NOTIFY |
-                        BLECharacteristic::PROPERTY_WRITE);
+    // EKG-karakteristik
+    pEcgCharacteristic = pService->createCharacteristic(
+        CHARACTERISTIC_UUID_ECG,
+        BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY
+    );
 
-    // Start the service
+    // Temperatur-karakteristik
+    pTempCharacteristic = pService->createCharacteristic(
+        CHARACTERISTIC_UUID_TEMP,
+        BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY
+    );
+
+    // Start servicen
     pService->start();
 
-    // Start advertising
+    // Start reklame
     BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
     pAdvertising->addServiceUUID(SERVICE_UUID);
-    pServer->getAdvertising()->start();
+    BLEDevice::startAdvertising();
 
-    Serial.println("Waiting for a client connection...");
+    Serial.println("BLE er klar - forbind...");
 }
 
 void loop() {
-    if (deviceConnected) {
-        String message = "Hello from ESP32!";
-        pCharacteristic->setValue(message.c_str());
-        pCharacteristic->notify();  // Send the message
-        Serial.println("Sent: " + message);
-        delay(2000);  // Send every 2 seconds
-    }
+    // Læs EKG
+    int ecgValue = analogRead(ecgPin);
+    char ecgStr[8];
+    sprintf(ecgStr, "%d", ecgValue);
+    pEcgCharacteristic->setValue(ecgStr);
+    pEcgCharacteristic->notify();
+    Serial.print("ECG: ");
+    Serial.println(ecgStr);
+
+    // Læs temperatur
+    float temperature = max31865.temperature(RTD_NOMINAL, RREF);
+    char tempStr[8];
+    dtostrf(temperature, 4, 2, tempStr);
+    pTempCharacteristic->setValue(tempStr);
+    pTempCharacteristic->notify();
+    Serial.print("Temp: ");
+    Serial.println(tempStr);
+
+    delay(10);  // Sampling rate på 100 Hz for EKG
 }
